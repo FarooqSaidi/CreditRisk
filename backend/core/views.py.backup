@@ -1,0 +1,422 @@
+"""
+Django REST Framework ViewSets for all models
+"""
+        loans = branch.loans.all()
+        serializer = LoanListSerializer(loans, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['get'])
+    def statistics(self, request, pk=None):
+        """Get statistics for a branch"""
+        branch = self.get_object()
+        loans = branch.loans.all()
+        
+        stats = {
+            'total_loans': loans.count(),
+            'total_principal': loans.aggregate(Sum('principal_amount'))['principal_amount__sum'] or 0,
+            'active_loans': loans.filter(status='ACTIVE').count(),
+            'defaulted_loans': loans.filter(status='DEFAULTED').count(),
+            'loan_officers': branch.loan_officers.filter(is_active=True).count(),
+        }
+        return Response(stats)
+
+
+class LoanOfficerViewSet(viewsets.ModelViewSet):
+    """ViewSet for LoanOfficer model"""
+    queryset = LoanOfficer.objects.all()
+    serializer_class = LoanOfficerSerializer
+    filterset_fields = ['branch', 'is_active']
+    search_fields = ['first_name', 'last_name', 'employee_id']
+
+
+class BorrowerViewSet(viewsets.ModelViewSet):
+    """ViewSet for Borrower model"""
+    queryset = Borrower.objects.all()
+    filterset_fields = ['district', 'business_industry', 'gender']
+    search_fields = ['first_name', 'last_name', 'national_id']
+    
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return BorrowerListSerializer
+        return BorrowerSerializer
+    
+    @action(detail=True, methods=['get'])
+    def loans(self, request, pk=None):
+        """Get all loans for a borrower"""
+        borrower = self.get_object()
+        loans = borrower.loans.all()
+        serializer = LoanListSerializer(loans, many=True)
+        return Response(serializer.data)
+
+
+class SpouseViewSet(viewsets.ModelViewSet):
+    """ViewSet for Spouse model"""
+    queryset = Spouse.objects.all()
+    serializer_class = SpouseSerializer
+    filterset_fields = ['employment_status']
+
+
+class GuarantorViewSet(viewsets.ModelViewSet):
+    """ViewSet for Guarantor model"""
+    queryset = Guarantor.objects.all()
+    serializer_class = GuarantorSerializer
+    filterset_fields = ['borrower', 'relationship_to_borrower', 'employment_status']
+    search_fields = ['first_name', 'last_name', 'national_id']
+
+
+class LoanViewSet(viewsets.ModelViewSet):
+    """ViewSet for Loan model"""
+    search_fields = ['loan_number', 'borrower__first_name', 'borrower__last_name']
+    ordering_fields = ['disbursement_date', 'principal_amount', 'status']
+    
+    def get_queryset(self):
+        queryset = Loan.objects.all()
+        
+        # Apply filters from query params
+        branch = self.request.query_params.get('branch')
+        loan_type = self.request.query_params.get('loan_type')
+        status_filter = self.request.query_params.get('status')
+        search = self.request.query_params.get('search')
+        
+        if branch:
+            queryset = queryset.filter(branch_id=branch)
+        if loan_type:
+            queryset = queryset.filter(loan_type=loan_type)
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+            
+        if search:
+            queryset = queryset.filter(
+                Q(loan_number__icontains=search) |
+                Q(borrower__first_name__icontains=search) |
+                Q(borrower__last_name__icontains=search)
+            )
+            
+        return queryset.order_by('-disbursement_date')
+    
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return LoanListSerializer
+        return LoanSerializer
+    
+    @action(detail=False, methods=['get'])
+    def statistics(self, request):
+        """Get overall loan statistics"""
+        loans = self.get_queryset()
+        
+        # Apply filters from query params
+        branch = request.query_params.get('branch')
+        loan_type = request.query_params.get('loan_type')
+        status_filter = request.query_params.get('status')
+        
+        if branch:
+            loans = loans.filter(branch_id=branch)
+        if loan_type:
+            loans = loans.filter(loan_type=loan_type)
+        if status_filter:
+            loans = loans.filter(status=status_filter)
+        
+        # Calculate statistics
+        total_loans = loans.count()
+        total_principal = loans.aggregate(Sum('principal_amount'))['principal_amount__sum'] or 0
+        active_loans = loans.filter(status='ACTIVE').count()
+        defaulted_loans = loans.filter(status='DEFAULTED').count()
+        avg_loan_amount = loans.aggregate(Avg('principal_amount'))['principal_amount__avg'] or 0
+        
+        # By loan type
+        by_loan_type = {}
+        for loan_type_choice, display_name in Loan.LOAN_TYPE_CHOICES:
+            count = loans.filter(loan_type=loan_type_choice).count()
+            by_loan_type[display_name] = count
+        
+        # By branch
+        by_branch = {}
+        for branch in Branch.objects.all():
+            count = loans.filter(branch=branch).count()
+            by_branch[branch.get_name_display()] = count
+        
+        stats = {
+            'total_loans': total_loans,
+            'total_principal': total_principal,
+            'active_loans': active_loans,
+            'defaulted_loans': defaulted_loans,
+            'avg_loan_amount': avg_loan_amount,
+            'by_loan_type': by_loan_type,
+            'by_branch': by_branch,
+        }
+        
+        serializer = LoanStatisticsSerializer(stats)
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'])
+    def portfolio_metrics(self, request):
+        """Calculate portfolio at risk (PAR) metrics"""
+        today = timezone.now().date()
+        
+        # Get all active loans
+        active_loans = Loan.objects.filter(status__in=['ACTIVE', 'DISBURSED'])
+        
+        # Apply filters from query params
+        branch = request.query_params.get('branch')
+        loan_type = request.query_params.get('loan_type')
+        status_filter = request.query_params.get('status')
+        
+        if branch:
+            active_loans = active_loans.filter(branch_id=branch)
+        if loan_type:
+            active_loans = active_loans.filter(loan_type=loan_type)
+        if status_filter:
+            # Override the default active filter if status is specified
+            active_loans = Loan.objects.filter(status=status_filter)
+            if branch:
+                active_loans = active_loans.filter(branch_id=branch)
+            if loan_type:
+                active_loans = active_loans.filter(loan_type=loan_type)
+        
+        # Calculate outstanding amounts
+        total_outstanding = active_loans.aggregate(Sum('principal_amount'))['principal_amount__sum'] or Decimal('0')
+        
+        # Calculate PAR30, PAR60, PAR90
+        par30_loans = []
+        par60_loans = []
+        par90_loans = []
+        
+        for loan in active_loans:
+            # Get overdue repayments
+            overdue_repayments = loan.repayments.filter(
+                scheduled_date__lt=today,
+                payment_status__in=['SCHEDULED', 'PARTIAL_PAYMENT', 'MISSED_PAYMENT']
+            ).order_by('scheduled_date')
+            
+            if overdue_repayments.exists():
+                oldest_overdue = overdue_repayments.first()
+                days_overdue = (today - oldest_overdue.scheduled_date).days
+                
+                if days_overdue >= 90:
+                    par90_loans.append(loan)
+                elif days_overdue >= 60:
+                    par60_loans.append(loan)
+                elif days_overdue >= 30:
+                    par30_loans.append(loan)
+        
+        # Calculate amounts at risk
+        total_at_risk_30 = sum(loan.principal_amount for loan in par30_loans)
+        total_at_risk_60 = sum(loan.principal_amount for loan in par60_loans)
+        total_at_risk_90 = sum(loan.principal_amount for loan in par90_loans)
+        
+        # Calculate rates
+        par30_rate = (total_at_risk_30 / total_outstanding) if total_outstanding > 0 else Decimal('0')
+        par60_rate = (total_at_risk_60 / total_outstanding) if total_outstanding > 0 else Decimal('0')
+        par90_rate = (total_at_risk_90 / total_outstanding) if total_outstanding > 0 else Decimal('0')
+        
+        # Calculate Risk Metrics (PD, LGD, VaR)
+        # PD: Using PAR90 as a proxy for default probability + a base rate
+        # In a real model, this would come from the Bayesian inference engine
+        pd_rate = par90_rate + Decimal('0.02') # Base 2% + PAR90 contribution
+        if pd_rate > 1: pd_rate = Decimal('1.0')
+        
+        # LGD: Fixed assumption for now (Beta distribution mean)
+        lgd_rate = Decimal('0.458')
+        
+        # Portfolio VaR (95%): Simplified calculation (Exposure * PD * LGD * Risk Factor)
+        # Using a risk factor of 1.645 for 95% confidence interval in normal distribution
+        risk_factor = Decimal('1.645')
+        portfolio_var = total_outstanding * pd_rate * lgd_rate * risk_factor
+        
+        metrics = {
+            'par30_rate': par30_rate,
+            'par60_rate': par60_rate,
+            'par90_rate': par90_rate,
+            'total_outstanding': total_outstanding,
+            'total_at_risk_30': total_at_risk_30,
+            'total_at_risk_60': total_at_risk_60,
+            'total_at_risk_90': total_at_risk_90,
+            'pd_rate': pd_rate,
+            'lgd_rate': lgd_rate,
+            'portfolio_var': portfolio_var
+        }
+        
+        # We need to update the serializer to accept these new fields
+        # Or just return the dict directly if we bypass serializer validation for read-only
+        return Response(metrics)
+
+
+class CollateralViewSet(viewsets.ModelViewSet):
+    """ViewSet for Collateral model"""
+    queryset = Collateral.objects.all()
+    serializer_class = CollateralSerializer
+    filterset_fields = ['loan', 'collateral_type', 'condition', 'owner_type']
+
+
+class RepaymentViewSet(viewsets.ModelViewSet):
+    """ViewSet for Repayment model"""
+    queryset = Repayment.objects.all()
+    serializer_class = RepaymentSerializer
+    filterset_fields = ['loan', 'payment_status']
+    ordering_fields = ['scheduled_date', 'actual_payment_date']
+    
+    @action(detail=False, methods=['get'])
+    def statistics(self, request):
+        """Get repayment statistics"""
+        repayments = self.get_queryset()
+        
+        # Apply filters
+        loan_id = request.query_params.get('loan')
+        if loan_id:
+            repayments = repayments.filter(loan_id=loan_id)
+        
+        # Exclude scheduled future payments
+        completed_repayments = repayments.exclude(payment_status='SCHEDULED')
+        
+        total_repayments = completed_repayments.count()
+        on_time_count = completed_repayments.filter(payment_status='ON_TIME').count()
+        late_count = completed_repayments.filter(payment_status='LATE_PAYMENT').count()
+        partial_count = completed_repayments.filter(payment_status='PARTIAL_PAYMENT').count()
+        missed_count = completed_repayments.filter(payment_status='MISSED_PAYMENT').count()
+        
+        on_time_rate = (on_time_count / total_repayments * 100) if total_repayments > 0 else 0
+        
+        # Average days late (excluding missed payments)
+        late_repayments = completed_repayments.filter(days_late__gt=0).exclude(payment_status='MISSED_PAYMENT')
+        avg_days_late = late_repayments.aggregate(Avg('days_late'))['days_late__avg'] or 0
+        
+        stats = {
+            'total_repayments': total_repayments,
+            'on_time_count': on_time_count,
+            'late_count': late_count,
+            'partial_count': partial_count,
+            'missed_count': missed_count,
+            'on_time_rate': on_time_rate,
+            'avg_days_late': avg_days_late,
+        }
+        
+        serializer = RepaymentStatisticsSerializer(stats)
+        return Response(serializer.data)
+
+
+class RecoveryViewSet(viewsets.ModelViewSet):
+    """ViewSet for Recovery model"""
+    queryset = Recovery.objects.all()
+    serializer_class = RecoverySerializer
+    filterset_fields = ['loan']
+    ordering_fields = ['recovery_date', 'recovery_amount']
+
+
+class LoanRiskMetricViewSet(viewsets.ModelViewSet):
+    """ViewSet for LoanRiskMetric model"""
+    queryset = LoanRiskMetric.objects.all()
+    serializer_class = LoanRiskMetricSerializer
+    filterset_fields = ['loan']
+
+
+class GroupRiskMetricViewSet(viewsets.ModelViewSet):
+    """ViewSet for GroupRiskMetric model"""
+    queryset = GroupRiskMetric.objects.all()
+    serializer_class = GroupRiskMetricSerializer
+    filterset_fields = ['branch', 'loan_type', 'tenure_months']
+    
+    @action(detail=False, methods=['get'])
+    def by_branch(self, request):
+        """Get risk metrics grouped by branch"""
+        metrics = self.get_queryset().filter(loan_type__isnull=True, tenure_months__isnull=True)
+        serializer = self.get_serializer(metrics, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'])
+    def by_loan_type(self, request):
+        """Get risk metrics grouped by loan type"""
+        metrics = self.get_queryset().filter(branch__isnull=True, tenure_months__isnull=True)
+        serializer = self.get_serializer(metrics, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'])
+    def by_tenure(self, request):
+        """Get risk metrics grouped by tenure"""
+        metrics = self.get_queryset().filter(branch__isnull=True, loan_type__isnull=True)
+        serializer = self.get_serializer(metrics, many=True)
+        return Response(serializer.data)
+
+
+class MacroMonthlyViewSet(viewsets.ModelViewSet):
+    """ViewSet for MacroMonthly model"""
+    queryset = MacroMonthly.objects.all()
+    serializer_class = MacroMonthlySerializer
+    ordering_fields = ['month_date']
+    ordering = ['-month_date']
+
+
+class ClientScreeningViewSet(viewsets.ModelViewSet):
+    """ViewSet for Client Screening"""
+    queryset = ClientScreening.objects.all()
+    serializer_class = ClientScreeningSerializer
+    filterset_fields = ['borrower', 'status', 'cluster_group']
+    
+    @action(detail=True, methods=['post'])
+    def calculate_risk(self, request, pk=None):
+        """
+        Calculate risk score, cluster, and recommended loan amount
+        """
+        screening = self.get_object()
+        
+        # Ensure we have necessary data
+        if not hasattr(screening, 'household_assessment'):
+            return Response(
+                {"error": "Household assessment is missing"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+            
+        service = RiskClusteringService()
+        
+        # 1. Predict Cluster
+        risk_cluster = service.predict_risk_cluster(screening)
+        
+        # 2. Calculate Recommendation
+        recommended_amount = service.calculate_recommendation(screening, risk_cluster)
+        
+        # 3. Update Screening
+        screening.cluster_group = risk_cluster
+        screening.recommended_loan_amount = recommended_amount
+        # Simple mapping for score for now (Low=90, Med=60, High=30)
+        score_map = {'LOW': 90, 'MEDIUM': 60, 'HIGH': 30}
+        screening.client_risk_score = score_map.get(risk_cluster, 50)
+        
+        screening.save()
+        
+        serializer = self.get_serializer(screening)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'])
+    def add_household_assessment(self, request, pk=None):
+        screening = self.get_object()
+        serializer = HouseholdAssessmentSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save(screening=screening)
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=['post'])
+    def add_business_assessment(self, request, pk=None):
+        screening = self.get_object()
+        serializer = BusinessAssessmentSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save(screening=screening)
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=['post'])
+    def add_informal_loan(self, request, pk=None):
+        screening = self.get_object()
+        serializer = InformalLoanSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save(screening=screening)
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=['post'])
+    def add_trust_game(self, request, pk=None):
+        screening = self.get_object()
+        serializer = TrustGameSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save(screening=screening)
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
