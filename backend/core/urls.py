@@ -14,11 +14,12 @@ from .views import (
     GuarantorCollateralViewSet, BehavioralVerificationViewSet
 )
 
-from .model_views import RiskModelView
+# Temporarily disabled Bayesian models (requires numpy, scipy, pymc)
+# from .model_views import RiskModelView
 
 # Create router and register viewsets
 router = DefaultRouter()
-router.register(r'models', RiskModelView, basename='models')
+# router.register(r'models', RiskModelView, basename='models')
 router.register(r'branches', BranchViewSet, basename='branch')
 router.register(r'loan-officers', LoanOfficerViewSet, basename='loan-officer')
 router.register(r'borrowers', BorrowerViewSet, basename='borrower')
