@@ -1,0 +1,78 @@
+========================================
+PUSH TO GITHUB - COPY THESE COMMANDS
+========================================
+
+Step 1: Create Repository on GitHub
+------------------------------------
+1. Go to: https://github.com/new
+2. Repository name: credit-risk-malawi
+3. Description: AI-powered microfinance credit risk assessment for Malawi
+4. Choose Public or Private
+5. DO NOT initialize with README
+6. Click "Create repository"
+
+Step 2: Run These Commands
+---------------------------
+Copy and paste these commands one by one:
+
+git remote add origin https://github.com/FarooqSaidiI/credit-risk-malawi.git
+git push -u origin main
+
+Step 3: Verify on GitHub
+-------------------------
+1. Refresh your GitHub repository page
+2. You should see all your files
+3. README.md will display automatically
+
+Step 4: Deploy to Render
+-------------------------
+Follow the guide in DEPLOYMENT.md
+
+Quick Render Setup:
+1. Go to: https://dashboard.render.com
+2. Create PostgreSQL database
+3. Create Web Service (backend)
+   - Root Directory: backend
+   - Build Command: ./build.sh
+   - Start Command: gunicorn creditrisk.wsgi:application
+4. Create Static Site (frontend)
+   - Root Directory: frontend
+   - Build Command: npm install && npm run build
+   - Publish Directory: dist
+
+========================================
+IMPORTANT NOTES
+========================================
+
+✅ Git is initialized
+✅ All files are committed
+✅ Main branch is ready
+✅ .gitignore is configured
+✅ Documentation is complete
+
+Your repository will include:
+- Complete Django backend
+- React frontend with Vite
+- Trust game assessments
+- Risk calculation models
+- Comprehensive documentation
+- Deployment scripts
+
+========================================
+NEXT STEPS AFTER GITHUB PUSH
+========================================
+
+1. Star your own repo ⭐
+2. Add topics: microfinance, credit-risk, malawi, django, react
+3. Deploy to Render (see DEPLOYMENT.md)
+4. Test your live app
+5. Share with users!
+
+========================================
+REPOSITORY URL
+========================================
+
+After pushing, your repo will be at:
+https://github.com/FarooqSaidiI/credit-risk-malawi
+
+========================================
